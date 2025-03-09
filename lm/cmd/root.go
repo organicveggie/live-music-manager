@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"github.com/organicveggie/livemusic/lm/cmd/analyze"
 	"github.com/organicveggie/livemusic/lm/cmd/scan"
 	"github.com/spf13/cobra"
 )
@@ -19,4 +20,5 @@ func Execute() error {
 
 func init() {
 	rootCmd.AddCommand(scan.Cmd)
+	rootCmd.AddCommand(analyze.Cmd)
 }

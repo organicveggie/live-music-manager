@@ -1,7 +1,13 @@
 package main
 
-import "github.com/organicveggie/livemusic/lm/cmd"
+import (
+	"fmt"
+
+	"github.com/organicveggie/livemusic/lm/cmd"
+)
 
 func main() {
-	cmd.Execute()
+	if err := cmd.Execute(); err != nil {
+		fmt.Printf("Error: %v", err)
+	}
 }
