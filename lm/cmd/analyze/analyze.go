@@ -1,7 +1,6 @@
 package analyze
 
 import (
-	"bufio"
 	"cmp"
 	"context"
 	"fmt"
@@ -74,18 +73,13 @@ func analyze(cmd *cobra.Command, args []string) error {
 	for _, f := range args {
 		analyzeFile(storage, f)
 	}
-	if cfg.source == SourceFile {
-		file, err := os.Open(cfg.sourceFile)
-		if err != nil {
-			return fmt.Errorf("error opening listfile %s: %v", cfg.sourceFile, err)
-		}
-		defer file.Close()
 
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			line := scanner.Text()
-			analyzeFile(storage, line)
-		}
+	handler, err := newFileSourceHandler(cfg.sourceFile)
+	if err != nil {
+		return fmt.Errorf("error creating file source %s: %v", cfg.sourceFile, err)
+	}
+	for filename := range handler.AllFiles() {
+		analyzeFile(storage, filename)
 	}
 
 	return nil
@@ -194,6 +188,11 @@ func newMetadata(filename string, md tag.Metadata) *Metadata {
 	}
 
 	return &m
+}
+
+type SourceHandler interface {
+	GetFilename() (string, error)
+	Close() error
 }
 
 func analyzeFile(storage *StorageHandler, filename string) error {
