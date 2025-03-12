@@ -2,10 +2,12 @@ package analyze
 
 import (
 	"bufio"
-	"encoding/json"
+	"cmp"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -14,9 +16,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type commandConfig struct {
+	source     Source
+	sourceFile string
+
+	mongoURI string
+}
+
 var (
-	listFile string
-	Cmd      = &cobra.Command{
+	cfg commandConfig
+
+	Cmd = &cobra.Command{
 		Use:   "analyze [file1] {file2 ... fileN}",
 		Short: "Analyze audio files and extract metadata",
 		Args:  cobra.ArbitraryArgs,
@@ -24,25 +34,57 @@ var (
 	}
 )
 
+func checkFlags(cfg *commandConfig) error {
+	cfg.mongoURI = cmp.Or(cfg.mongoURI, os.Getenv("MONGODB_URI"))
+	if cfg.mongoURI == "" {
+		return fmt.Errorf("missing required MongoDB connection string")
+	}
+
+	if cfg.source == SourceFile && cfg.sourceFile == "" {
+		return fmt.Errorf("missing required --file flag")
+	}
+
+	return nil
+}
+
 func init() {
-	Cmd.Flags().StringVarP(&listFile, "listfile", "l", "", "Filename containing a list of files to analyze")
+	Cmd.Flags().VarP(&cfg.source, "source", "s", fmt.Sprintf("Source of files to analyze: %s", strings.Join(sourceNames(), ",")))
+	Cmd.Flags().StringVarP(&cfg.sourceFile, "file", "f", "", "Filename containing a list of files to analyze")
+	Cmd.Flags().StringVarP(&cfg.mongoURI, "mongodb_uri", "m", "", "MongoDB connection string")
 }
 
 func analyze(cmd *cobra.Command, args []string) error {
-	for _, f := range args {
-		analyzeFile(f)
+	if err := checkFlags(&cfg); err != nil {
+		return err
 	}
-	if listFile != "" {
-		file, err := os.Open(listFile)
+
+	ctx := cmp.Or(cmd.Context(), context.Background())
+
+	storage, err := newStorageHandler(cfg.mongoURI)
+	if err != nil {
+		return fmt.Errorf("error loading storage handler for %q: %v", cfg.mongoURI, err)
+	}
+	defer func() error {
+		if err := storage.Close(ctx); err != nil {
+			return fmt.Errorf("error disconnecting from MongoDB: %v", err)
+		}
+		return nil
+	}()
+
+	for _, f := range args {
+		analyzeFile(storage, f)
+	}
+	if cfg.source == SourceFile {
+		file, err := os.Open(cfg.sourceFile)
 		if err != nil {
-			return fmt.Errorf("error opening listfile %s: %v", listFile, err)
+			return fmt.Errorf("error opening listfile %s: %v", cfg.sourceFile, err)
 		}
 		defer file.Close()
 
 		scanner := bufio.NewScanner(file)
 		for scanner.Scan() {
 			line := scanner.Text()
-			analyzeFile(line)
+			analyzeFile(storage, line)
 		}
 	}
 
@@ -50,32 +92,33 @@ func analyze(cmd *cobra.Command, args []string) error {
 }
 
 type Metadata struct {
-	Filename string    `json:"filename"`
-	Album    string    `json:"album"`
-	Artist   string    `json:"artist"`
-	Date     time.Time `json:"date"`
-	Disc     int       `json:"disc"`
-	Genre    []string  `json:"genre"`
-	Set      int       `json:"set"`
-	Title    string    `json:"title"`
-	Track    int       `json:"track"`
-	Venue    string    `json:"venue"`
+	Id       string    `json:"id" bson:"_id"`
+	Filename string    `json:"filename" bson:"filename"`
+	Album    string    `json:"album" bson:"album"`
+	Artist   string    `json:"artist" bson:"artist"`
+	Date     time.Time `json:"date" bson:"date,omitempty"`
+	Disc     int       `json:"disc" bson:"disc,omitempty"`
+	Genre    []string  `json:"genre" bson:"genre,omitempty"`
+	Set      int       `json:"set" bson:"set,omitempty"`
+	Title    string    `json:"title" bson:"title"`
+	Track    int       `json:"track" bson:"track,omitempty"`
+	Venue    string    `json:"venue" bson:"venue,omitempty"`
 
-	AccousticIdFingerprint string      `json:"accoustic_id_fingerprint"`
-	MusicBrainz            MusicBrainz `json:"music_brainz"`
+	AccousticIdFingerprint string      `json:"accoustic_id_fingerprint" bson:"accoustic_id_fingerprint,omitempty"`
+	MusicBrainz            MusicBrainz `json:"music_brainz" bson:"music_brainz,omitempty"`
 
-	Tags map[string]string `json:"tags"`
+	Tags map[string]string `json:"tags" bson:"tags,omitempty"`
 }
 
 type MusicBrainz struct {
 	// Unique ID of the artist or band. For example, Rush has the artist id of
 	// "534ee493-bfac-4575-a44a-0ae41e2c3fe4".
-	ArtistId string `json:"artist_id"`
+	ArtistId string `json:"artist_id" bson:"artist_id"`
 
 	// Release group is what most people would call an "album". For example,
 	// the album titled "Roll the Bones" by Rush has an release group id of
 	// "e188de4e-6d15-3ca3-be49-fa13c67a03c0".
-	ReleaseGroupId string `json:"release_group_id"`
+	ReleaseGroupId string `json:"release_group_id" bson:"release_group_id"`
 
 	// Release is a specific edition of an album. For example, the album
 	// titled "Roll the Bones" by Rush has had at least 13 different releases
@@ -83,11 +126,18 @@ type MusicBrainz struct {
 	// has the release id of "50e551bd-5d24-37e5-913d-07c25cd85e8e". Whereas
 	// the original 12" vinyl release by Atlantic was worldwide and has the
 	// release id of "52bf9926-dc7f-40b9-9a08-d5f0c98f8a63".
-	ReleaseId string `json:"release_id"`
+	ReleaseId string `json:"release_id" bson:"release_id"`
 }
 
 func newMetadata(filename string, md tag.Metadata) *Metadata {
+	trackNum, _ := md.Track()
+	id := fmt.Sprintf("%s_%s_%s_%04d", md.Artist(), md.Album(), filename, trackNum)
+
+	cleanupRegEx := regexp.MustCompile(`[,_ ]+`)
+	id = cleanupRegEx.ReplaceAllString(id, "-")
+
 	m := Metadata{
+		Id:       strings.ToLower(id),
 		Filename: filename,
 		Album:    md.Album(),
 		Artist:   md.Artist(),
@@ -146,7 +196,7 @@ func newMetadata(filename string, md tag.Metadata) *Metadata {
 	return &m
 }
 
-func analyzeFile(filename string) error {
+func analyzeFile(storage *StorageHandler, filename string) error {
 	fmt.Printf("Processing %s\n", filename)
 
 	f, err := os.Open(filename)
@@ -161,12 +211,15 @@ func analyzeFile(filename string) error {
 	}
 
 	metadata := newMetadata(filepath.Base(filename), m)
-
-	b, err := json.MarshalIndent(metadata, "", "  ")
-	if err != nil {
-		return fmt.Errorf("unable to marshal %s due to %s", filename, err)
+	if err = storage.SaveMetadata(context.Background(), metadata); err != nil {
+		return err
 	}
-	fmt.Println(string(b))
+
+	// b, err := json.MarshalIndent(metadata, "", "  ")
+	// if err != nil {
+	// 	return fmt.Errorf("unable to marshal %s due to %s", filename, err)
+	// }
+	// fmt.Println(string(b))
 
 	return nil
 }
