@@ -52,6 +52,11 @@ func init() {
 	Cmd.Flags().StringVarP(&cfg.mongoURI, "mongodb_uri", "m", "", "MongoDB connection string")
 }
 
+type SourceHandler interface {
+	GetFilename() (string, error)
+	Close() error
+}
+
 func analyze(cmd *cobra.Command, args []string) error {
 	if err := checkFlags(&cfg); err != nil {
 		return err
@@ -78,6 +83,8 @@ func analyze(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("error creating file source %s: %v", cfg.sourceFile, err)
 	}
+	defer handler.Close()
+
 	for filename := range handler.AllFiles() {
 		analyzeFile(storage, filename)
 	}
@@ -188,11 +195,6 @@ func newMetadata(filename string, md tag.Metadata) *Metadata {
 	}
 
 	return &m
-}
-
-type SourceHandler interface {
-	GetFilename() (string, error)
-	Close() error
 }
 
 func analyzeFile(storage *StorageHandler, filename string) error {
