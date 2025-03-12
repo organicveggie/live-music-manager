@@ -1,5 +1,5 @@
 const database = 'lm';
-const collection = 'live-music';
+const collection = 'tracks';
 
 // Create a new database.
 use(database);
