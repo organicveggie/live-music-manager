@@ -24,14 +24,13 @@ func newFileAddFileOut(filename string, overwrite bool) (*FileAddFileOut, error)
 		if errors.Is(err, fs.ErrExist) && !overwrite {
 			return nil, fmt.Errorf("output file %s exists: %v", filename, err)
 		}
-		if !errors.Is(err, fs.ErrExist) {
-			return nil, fmt.Errorf("error checking output file %s: %v", filename, err)
-		}
 	}
 
 	if fileOut.file, err = os.Create(fileOut.filename); err != nil {
 		return nil, err
 	}
+
+	fileOut.writer = bufio.NewWriter(fileOut.file)
 
 	return fileOut, nil
 }
