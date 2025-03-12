@@ -10,7 +10,7 @@ import (
 
 const (
 	databaseName   = "lm"
-	collectionName = "live-music"
+	collectionName = "tracks"
 )
 
 type StorageHandler struct {
