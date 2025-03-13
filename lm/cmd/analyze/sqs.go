@@ -11,6 +11,7 @@ import (
 )
 
 type SQSSource struct {
+	ch              AnalyzeChan
 	maxMessages     int
 	queueName       string
 	waitTimeoutSecs int
@@ -20,11 +21,12 @@ type SQSSource struct {
 	session  *session.Session
 }
 
-func newSQSSource(profile, queueName string) (*SQSSource, error) {
+func newSQSSource(ch AnalyzeChan, profile, queueName string) (*SQSSource, error) {
 	q := &SQSSource{
+		ch:              ch,
 		maxMessages:     10,
 		queueName:       queueName,
-		waitTimeoutSecs: 30,
+		waitTimeoutSecs: 15,
 	}
 
 	// Setup AWS session options
@@ -66,7 +68,7 @@ func (sq *SQSSource) Close() error {
 	return nil
 }
 
-func (sq *SQSSource) AnalyzeFiles(fn AnalyzerFn) error {
+func (sq *SQSSource) Analyze() error {
 	hasMoreMessages := true
 	for hasMoreMessages {
 		msgIn := sqs.ReceiveMessageInput{
@@ -84,20 +86,15 @@ func (sq *SQSSource) AnalyzeFiles(fn AnalyzerFn) error {
 		}
 
 		for _, msg := range recvMsg.Messages {
-			fmt.Printf("Processing [%s] %q ...", *msg.MessageId, *msg.Body)
-			if err := fn(*msg.Body); err != nil {
-				fmt.Println()
-				return fmt.Errorf("error processing %q from %s: %v", *msg.Body, sq.queueURL, err)
-			}
+			fmt.Printf("Received [%s] %q\n", *msg.MessageId, *msg.Body)
+			sq.ch <- *msg.Body
 
 			if _, err := sq.client.DeleteMessage(&sqs.DeleteMessageInput{
 				QueueUrl:      &sq.queueURL,
 				ReceiptHandle: msg.ReceiptHandle,
 			}); err != nil {
-				fmt.Println()
 				return fmt.Errorf("error deleting [%s] from %s: %v", *msg.ReceiptHandle, sq.queueURL, err)
 			}
-			fmt.Println(" done")
 		}
 
 		hasMoreMessages = len(recvMsg.Messages) > 0

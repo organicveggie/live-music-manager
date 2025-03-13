@@ -13,6 +13,7 @@ import (
 
 	"github.com/dhowden/tag"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 )
 
 type commandConfig struct {
@@ -28,10 +29,11 @@ var (
 	cfg commandConfig
 
 	Cmd = &cobra.Command{
-		Use:   "analyze [file1] {file2 ... fileN}",
-		Short: "Analyze audio files and extract metadata",
-		Args:  cobra.ArbitraryArgs,
-		RunE:  analyze,
+		Use:          "analyze [file1] {file2 ... fileN}",
+		Short:        "Analyze audio files and extract metadata",
+		Args:         cobra.ArbitraryArgs,
+		RunE:         analyze,
+		SilenceUsage: true,
 	}
 )
 
@@ -60,11 +62,11 @@ func init() {
 }
 
 type SourceHandler interface {
-	AnalyzeFiles(fn AnalyzerFn) error
+	Analyze() error
 	Close() error
 }
 
-type AnalyzerFn func(filename string) error
+type AnalyzeChan chan<- string
 
 func analyze(cmd *cobra.Command, args []string) error {
 	if err := checkFlags(&cfg); err != nil {
@@ -85,29 +87,40 @@ func analyze(cmd *cobra.Command, args []string) error {
 		return nil
 	}()
 
+	ch := make(chan string)
+
 	for _, f := range args {
 		analyzeFile(storage, f)
 	}
 
 	var handler SourceHandler
 	if cfg.source == SourceFile {
-		handler, err = newFileSourceHandler(cfg.sourceFile)
+		fmt.Println("Setting up file source...")
+		handler, err = newFileSourceHandler(ch, cfg.sourceFile)
 		if err != nil {
 			return fmt.Errorf("error creating file source %s: %v", cfg.sourceFile, err)
 		}
 	} else if cfg.source == SourceSQS {
-		handler, err = newSQSSource(cfg.awsProfile, cfg.queueName)
+		fmt.Println("Setting up SQS source...")
+		handler, err = newSQSSource(ch, cfg.awsProfile, cfg.queueName)
 		if err != nil {
 			return fmt.Errorf("error creating SQS source for %s: %v", cfg.queueName, err)
 		}
 	}
 	defer handler.Close()
 
-	handler.AnalyzeFiles(func(filename string) error {
-		return analyzeFile(storage, filename)
+	errs, ctx := errgroup.WithContext(ctx)
+	errs.Go(func() error {
+		fmt.Println("Retrieving files...")
+		defer close(ch)
+		return handler.Analyze()
 	})
 
-	return nil
+	for filename := range ch {
+		analyzeFile(storage, filename)
+	}
+
+	return errs.Wait()
 }
 
 type Metadata struct {

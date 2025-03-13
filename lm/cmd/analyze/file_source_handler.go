@@ -9,10 +9,12 @@ import (
 type FileSourceHandler struct {
 	sourceFileName string
 	file           *os.File
+	ch             AnalyzeChan
 }
 
-func newFileSourceHandler(sourceFileName string) (*FileSourceHandler, error) {
+func newFileSourceHandler(ch AnalyzeChan, sourceFileName string) (*FileSourceHandler, error) {
 	fs := FileSourceHandler{
+		ch:             ch,
 		sourceFileName: sourceFileName,
 	}
 
@@ -28,25 +30,11 @@ func (fs *FileSourceHandler) Close() error {
 	return fs.file.Close()
 }
 
-func (fs *FileSourceHandler) AllFiles() func(yield func(string, error) bool) {
-	return func(yield func(string, error) bool) {
-		scanner := bufio.NewScanner(fs.file)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !yield(line, nil) {
-				return
-			}
-		}
-	}
-}
-
-func (fs *FileSourceHandler) AnalyzeFiles(fn AnalyzerFn) error {
+func (fs *FileSourceHandler) Analyze() error {
 	scanner := bufio.NewScanner(fs.file)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if err := fn(line); err != nil {
-			return err
-		}
+		fs.ch <- line
 	}
 	return nil
 }
