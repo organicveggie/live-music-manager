@@ -6,6 +6,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/sqs"
+
+	sqsh "github.com/organicveggie/livemusic/lm/aws/sqs"
 )
 
 type QueueOut struct {
@@ -52,7 +54,7 @@ func newQueueOut(profile, queueName string) (*QueueOut, error) {
 	q.sqsSvc = sqs.New(q.session)
 
 	// Retrieve the SQS queue URL
-	if q.queueURL, err = GetQueueURL(q.sqsSvc, q.queueName); err != nil {
+	if q.queueURL, err = sqsh.GetQueueURL(q.sqsSvc, q.queueName); err != nil {
 		return nil, err
 	}
 
@@ -75,14 +77,4 @@ func (q *QueueOut) AddFile(filename string) error {
 
 	fmt.Printf("[%s]: %q\n", *sendOutput.MessageId, filename)
 	return nil
-}
-
-func GetQueueURL(sqsSvc *sqs.SQS, queueName string) (string, error) {
-	url, err := sqsSvc.GetQueueUrl(&sqs.GetQueueUrlInput{
-		QueueName: &queueName,
-	})
-	if err != nil {
-		return "", fmt.Errorf("error retrieving queue URL for queue %q: %v", queueName, err)
-	}
-	return *url.QueueUrl, nil
 }

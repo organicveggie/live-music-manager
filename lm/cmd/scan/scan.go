@@ -78,6 +78,7 @@ func scan(cmd *cobra.Command, args []string) error {
 	case outputFile:
 		output, err = newFileAddFileOut(cfg.filename, cfg.overwrite)
 	case outputQueue:
+		fmt.Println("Setting up AWS SQS connection...")
 		output, err = newQueueOut(cfg.awsProfile, cfg.queueName)
 	default:
 		output = newFileAddStdOut()
@@ -90,6 +91,7 @@ func scan(cmd *cobra.Command, args []string) error {
 	for _, k := range slices.Sorted(maps.Keys(files)) {
 		output.AddFile(k)
 	}
+	fmt.Println("Done")
 
 	return nil
 }

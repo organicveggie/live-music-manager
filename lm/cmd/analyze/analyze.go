@@ -19,7 +19,9 @@ type commandConfig struct {
 	source     Source
 	sourceFile string
 
-	mongoURI string
+	awsProfile string
+	mongoURI   string
+	queueName  string
 }
 
 var (
@@ -42,20 +44,27 @@ func checkFlags(cfg *commandConfig) error {
 	if cfg.source == SourceFile && cfg.sourceFile == "" {
 		return fmt.Errorf("missing required --file flag")
 	}
+	if cfg.source == SourceSQS && cfg.queueName == "" {
+		return fmt.Errorf("missing required --queue_name flag")
+	}
 
 	return nil
 }
 
 func init() {
+	Cmd.Flags().StringVarP(&cfg.awsProfile, "aws_profile", "a", "", "Name of the AWS profile to use")
+	Cmd.Flags().StringVarP(&cfg.mongoURI, "mongodb_uri", "m", "", "MongoDB connection string")
+	Cmd.Flags().StringVarP(&cfg.queueName, "queue_name", "q", "live-music", "Name of destination queue")
 	Cmd.Flags().VarP(&cfg.source, "source", "s", fmt.Sprintf("Source of files to analyze: %s", strings.Join(sourceNames(), ",")))
 	Cmd.Flags().StringVarP(&cfg.sourceFile, "file", "f", "", "Filename containing a list of files to analyze")
-	Cmd.Flags().StringVarP(&cfg.mongoURI, "mongodb_uri", "m", "", "MongoDB connection string")
 }
 
 type SourceHandler interface {
-	GetFilename() (string, error)
+	AnalyzeFiles(fn AnalyzerFn) error
 	Close() error
 }
+
+type AnalyzerFn func(filename string) error
 
 func analyze(cmd *cobra.Command, args []string) error {
 	if err := checkFlags(&cfg); err != nil {
@@ -64,6 +73,7 @@ func analyze(cmd *cobra.Command, args []string) error {
 
 	ctx := cmp.Or(cmd.Context(), context.Background())
 
+	fmt.Println("Setting up MongoDB connection...")
 	storage, err := newStorageHandler(cfg.mongoURI)
 	if err != nil {
 		return fmt.Errorf("error loading storage handler for %q: %v", cfg.mongoURI, err)
@@ -79,15 +89,23 @@ func analyze(cmd *cobra.Command, args []string) error {
 		analyzeFile(storage, f)
 	}
 
-	handler, err := newFileSourceHandler(cfg.sourceFile)
-	if err != nil {
-		return fmt.Errorf("error creating file source %s: %v", cfg.sourceFile, err)
+	var handler SourceHandler
+	if cfg.source == SourceFile {
+		handler, err = newFileSourceHandler(cfg.sourceFile)
+		if err != nil {
+			return fmt.Errorf("error creating file source %s: %v", cfg.sourceFile, err)
+		}
+	} else if cfg.source == SourceSQS {
+		handler, err = newSQSSource(cfg.awsProfile, cfg.queueName)
+		if err != nil {
+			return fmt.Errorf("error creating SQS source for %s: %v", cfg.queueName, err)
+		}
 	}
 	defer handler.Close()
 
-	for filename := range handler.AllFiles() {
-		analyzeFile(storage, filename)
-	}
+	handler.AnalyzeFiles(func(filename string) error {
+		return analyzeFile(storage, filename)
+	})
 
 	return nil
 }
